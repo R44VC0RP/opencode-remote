@@ -237,8 +237,7 @@ StartLimitBurst=5
 LimitNOFILE=65536
 MemoryMax=2G
 
-# Watchdog - restart if service becomes unresponsive
-WatchdogSec=60
+# NOTE: Watchdog removed - OpenCode does not support sd_notify
 
 [Install]
 WantedBy=multi-user.target
