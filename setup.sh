@@ -77,7 +77,7 @@ sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/opencode.json > /dev/null
 }
 EOFCONFIG
 
-# Create env file with API key
+# Create env file with API key (no password - OAuth2 Proxy handles auth)
 sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/.env > /dev/null << EOFENV
 ZEN_API_KEY=$ZEN_API_KEY
 EOFENV
@@ -110,10 +110,22 @@ chmod 600 /etc/oauth2-proxy/allowed-emails.txt
 
 echo ""
 echo -e "${GREEN}Step 6: Configuring nginx with performance optimizations...${NC}"
+
+# Create nginx config with WebSocket map at http level
+tee /etc/nginx/conf.d/websocket-upgrade.conf > /dev/null << 'EOFMAP'
+# WebSocket upgrade map
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+EOFMAP
+
 tee /etc/nginx/sites-available/$DOMAIN > /dev/null << 'EOFNGINX'
 upstream opencode_backend {
     server 127.0.0.1:4180 max_fails=3 fail_timeout=30s;
     keepalive 32;
+    keepalive_requests 100;
+    keepalive_timeout 60s;
 }
 
 server {
@@ -139,10 +151,10 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         
-        # WebSocket support with longer timeouts for coding sessions
+        # WebSocket support with HTTP/1.1
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
         
         # Extended timeouts for long-running AI operations
         proxy_connect_timeout 300s;
@@ -162,9 +174,6 @@ server {
         # Prevent 502 errors on backend restart
         proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;
         proxy_next_upstream_tries 2;
-        
-        # Connection pooling
-        proxy_set_header Connection "";
         
         # Permissive CSP for web coding agent with WASM terminal
         proxy_hide_header Content-Security-Policy;
@@ -343,21 +352,21 @@ echo "Your OpenCode server is now running at:"
 echo -e "  ${YELLOW}https://$DOMAIN${NC}"
 echo ""
 echo "Performance optimizations applied:"
-echo "  ✓ HTTP/2 enabled for faster connections"
-echo "  ✓ 500MB max request size for large files"
-echo "  ✓ Streaming AI responses (no buffering)"
-echo "  ✓ 5-minute timeouts for long operations"
-echo "  ✓ gzip compression (60-80% bandwidth savings)"
-echo "  ✓ Permissive CSP for WASM terminal support"
+echo "  - HTTP/2 enabled for faster connections"
+echo "  - 500MB max request size for large files"
+echo "  - Streaming AI responses (no buffering)"
+echo "  - 5-minute timeouts for long operations"
+echo "  - gzip compression (60-80% bandwidth savings)"
+echo "  - Permissive CSP for WASM terminal support"
 echo ""
 echo "Reliability features enabled:"
-echo "  ✓ Automatic service restart on failure"
-echo "  ✓ Health monitoring every 5 minutes"
-echo "  ✓ nginx upstream with error retry"
-echo "  ✓ Connection pooling to prevent 502 errors"
-echo "  ✓ Resource limits (2GB memory, 65k files)"
-echo "  ✓ Watchdog for automatic restart on hang"
-  ✓ OAuth2 authentication (no separate server password)
+echo "  - Automatic service restart on failure"
+echo "  - Health monitoring every 5 minutes"
+echo "  - nginx upstream with error retry"
+echo "  - Connection pooling to prevent 502 errors"
+echo "  - Resource limits (2GB memory, 65k files)"
+echo "  - Watchdog for automatic restart on hang"
+echo "  - OAuth2 authentication via Google"
 echo ""
 echo "Allowed users:"
 cat /etc/oauth2-proxy/allowed-emails.txt | sed 's/^/  - /'
