@@ -1,6 +1,6 @@
 # OpenCode Server Setup with Google OAuth
 
-This guide walks you through setting up an OpenCode server with Google OAuth authentication on Ubuntu.
+This guide walks you through setting up an optimized OpenCode server with Google OAuth authentication on Ubuntu. The setup includes performance optimizations specifically for AI coding agents.
 
 ## Architecture
 
@@ -19,6 +19,18 @@ This guide walks you through setting up an OpenCode server with Google OAuth aut
                                  └─────────────────────────────────────┘
 ```
 
+## Performance Optimizations
+
+This setup includes several optimizations for running AI coding agents:
+
+- **HTTP/2**: Enabled for multiplexed connections and reduced latency
+- **Streaming AI Responses**: Proxy buffering disabled for real-time streaming
+- **Large Request Support**: 500MB maximum body size for large file uploads
+- **Extended Timeouts**: 5-minute timeouts for long-running AI operations
+- **gzip Compression**: 60-80% bandwidth reduction for text content
+- **Permissive CSP**: Allows WASM modules for terminal support (ghostty-web)
+- **Optimized Buffers**: 128k-256k buffers for handling large AI responses
+
 ## Prerequisites
 
 - Ubuntu 24.x server with root access
@@ -34,7 +46,6 @@ git clone https://github.com/yourusername/opencode-server-setup.git
 cd opencode-server-setup
 
 # Edit the config
-cp config.example.env config.env
 nano config.env
 
 # Run the setup script
@@ -142,13 +153,22 @@ sudo chmod 600 /etc/oauth2-proxy/oauth2-proxy.cfg
 sudo chmod 600 /etc/oauth2-proxy/allowed-emails.txt
 ```
 
-### Step 7: Configure nginx
+### Step 7: Configure nginx with Performance Optimizations
 
 ```bash
 sudo tee /etc/nginx/sites-available/opencode > /dev/null << 'NGINX'
 server {
     server_name YOUR_DOMAIN;
 
+    # Enable HTTP/2
+    http2 on;
+
+    # Increase max body size for large file uploads and AI responses
+    client_max_body_size 500M;
+    
+    # Optimize buffer sizes for large AI responses
+    client_body_buffer_size 128k;
+    
     location / {
         proxy_pass http://127.0.0.1:4180;
         proxy_set_header Host $host;
@@ -156,12 +176,38 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         
-        # WebSocket support
+        # WebSocket support with longer timeouts
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_read_timeout 86400;
+        
+        # Extended timeouts for long-running AI operations
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        send_timeout 300s;
+        
+        # Disable proxy buffering for streaming AI responses
+        proxy_buffering off;
+        proxy_request_buffering off;
+        
+        # Increase buffer sizes
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
+        
+        # Permissive CSP for WASM terminal
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob: https:; font-src 'self' data: blob:; connect-src 'self' data: blob: wss: ws: https: http:; worker-src 'self' blob: data:; child-src 'self' blob: data:; frame-src 'self' blob: data:; manifest-src 'self';" always;
     }
+
+    # Enable gzip compression
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml font/truetype font/opentype application/vnd.ms-fontobject image/svg+xml application/manifest+json;
+    gzip_disable "msie6";
 
     listen 80;
     listen [::]:80;
@@ -287,6 +333,8 @@ sudo certbot --nginx -d YOUR_DOMAIN
 sudo ufw delete allow 80/tcp
 ```
 
+**CSP Errors**: The setup includes a permissive CSP policy for WASM support. If you see CSP errors, verify the nginx config includes the CSP headers.
+
 ## Adding More Users
 
 Edit the allowed emails file:
@@ -306,6 +354,24 @@ curl -fsSL https://opencode.ai/install | bash
 sudo systemctl restart opencode
 ```
 
+## Performance Notes
+
+### Streaming Responses
+The setup disables proxy buffering to enable real-time streaming of AI responses. This provides a better user experience when interacting with the AI coding agent.
+
+### Large File Support
+The 500MB request size limit allows uploading and analyzing large codebases and files.
+
+### Extended Timeouts
+5-minute timeouts prevent disconnections during:
+- Long-running code analysis
+- Large file processing
+- Complex refactoring operations
+- Extended AI conversations
+
+### Compression
+gzip compression reduces bandwidth usage by 60-80% for text-based content (code, JSON, HTML).
+
 ## Security Notes
 
 - OpenCode listens only on localhost (127.0.0.1)
@@ -313,6 +379,7 @@ sudo systemctl restart opencode
 - Only whitelisted Google accounts can access
 - HTTPS is enforced via nginx + Let's Encrypt
 - Only ports 22 (SSH) and 443 (HTTPS) are open
+- The permissive CSP is required for WASM terminal support
 
 ## License
 

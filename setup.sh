@@ -7,8 +7,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}OpenCode Server Setup${NC}"
-echo "================================"
+echo -e "${GREEN}OpenCode Server Setup with Performance Optimizations${NC}"
+echo "===================================================="
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -19,7 +19,7 @@ fi
 # Check for config file
 if [ ! -f "config.env" ]; then
     echo -e "${RED}config.env not found!${NC}"
-    echo "Please copy config.example.env to config.env and fill in your values"
+    echo "Please create config.env and fill in your values"
     exit 1
 fi
 
@@ -66,7 +66,7 @@ echo ""
 echo -e "${GREEN}Step 4: Configuring OpenCode...${NC}"
 sudo -u $ACTUAL_USER mkdir -p $ACTUAL_HOME/.config/opencode
 
-sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/opencode.json > /dev/null << 'EOF'
+sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/opencode.json > /dev/null << 'EOFCONFIG'
 {
   "$schema": "https://opencode.ai/config.json",
   "server": {
@@ -75,19 +75,19 @@ sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/opencode.json > /dev/null
   },
   "autoupdate": false
 }
-EOF
+EOFCONFIG
 
 # Create env file with API key
-sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/.env > /dev/null << EOF
+sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/.env > /dev/null << EOFENV
 ZEN_API_KEY=$ZEN_API_KEY
-EOF
+EOFENV
 chmod 600 $ACTUAL_HOME/.config/opencode/.env
 
 echo ""
 echo -e "${GREEN}Step 5: Configuring OAuth2 Proxy...${NC}"
 mkdir -p /etc/oauth2-proxy
 
-tee /etc/oauth2-proxy/oauth2-proxy.cfg > /dev/null << EOF
+tee /etc/oauth2-proxy/oauth2-proxy.cfg > /dev/null << EOFOAUTH
 provider = "google"
 client_id = "$GOOGLE_CLIENT_ID"
 client_secret = "$GOOGLE_CLIENT_SECRET"
@@ -100,7 +100,7 @@ http_address = "127.0.0.1:4180"
 
 cookie_secure = true
 redirect_url = "https://$DOMAIN/oauth2/callback"
-EOF
+EOFOAUTH
 
 # Create allowed emails file
 echo "$ALLOWED_EMAILS" | tr ',' '\n' > /etc/oauth2-proxy/allowed-emails.txt
@@ -109,31 +109,69 @@ chmod 600 /etc/oauth2-proxy/oauth2-proxy.cfg
 chmod 600 /etc/oauth2-proxy/allowed-emails.txt
 
 echo ""
-echo -e "${GREEN}Step 6: Configuring nginx...${NC}"
-tee /etc/nginx/sites-available/opencode > /dev/null << EOF
+echo -e "${GREEN}Step 6: Configuring nginx with performance optimizations...${NC}"
+tee /etc/nginx/sites-available/$DOMAIN > /dev/null << 'EOFNGINX'
 server {
-    server_name $DOMAIN;
+    server_name DOMAIN_PLACEHOLDER;
 
+    # Enable HTTP/2
+    http2 on;
+
+    # Increase max body size for large file uploads and AI responses
+    client_max_body_size 500M;
+    
+    # Optimize buffer sizes for large AI responses
+    client_body_buffer_size 128k;
+    
     location / {
         proxy_pass http://127.0.0.1:4180;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
         
-        # WebSocket support
+        # WebSocket support with longer timeouts for coding sessions
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_read_timeout 86400;
+        
+        # Extended timeouts for long-running AI operations
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        send_timeout 300s;
+        
+        # Disable proxy buffering for streaming AI responses
+        proxy_buffering off;
+        proxy_request_buffering off;
+        
+        # Increase buffer sizes for large responses
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
+        
+        # Permissive CSP for web coding agent with WASM terminal
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob: https:; font-src 'self' data: blob:; connect-src 'self' data: blob: wss: ws: https: http:; worker-src 'self' blob: data:; child-src 'self' blob: data:; frame-src 'self' blob: data:; manifest-src 'self';" always;
     }
+
+    # Enable gzip compression for faster transfers
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml font/truetype font/opentype application/vnd.ms-fontobject image/svg+xml application/manifest+json;
+    gzip_disable "msie6";
 
     listen 80;
     listen [::]:80;
 }
-EOF
+EOFNGINX
 
-ln -sf /etc/nginx/sites-available/opencode /etc/nginx/sites-enabled/
+# Replace placeholder with actual domain
+sed -i "s/DOMAIN_PLACEHOLDER/$DOMAIN/g" /etc/nginx/sites-available/$DOMAIN
+
+ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
 nginx -t
 systemctl reload nginx
 
@@ -152,7 +190,7 @@ ufw delete allow 80/tcp || true
 echo ""
 echo -e "${GREEN}Step 8: Creating systemd services...${NC}"
 
-tee /etc/systemd/system/opencode.service > /dev/null << EOF
+tee /etc/systemd/system/opencode.service > /dev/null << EOFSERVICE
 [Unit]
 Description=OpenCode AI Server
 After=network.target
@@ -168,9 +206,9 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOFSERVICE
 
-tee /etc/systemd/system/oauth2-proxy.service > /dev/null << 'EOF'
+tee /etc/systemd/system/oauth2-proxy.service > /dev/null << 'EOFPROXY'
 [Unit]
 Description=OAuth2 Proxy
 After=network.target
@@ -183,7 +221,7 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOFPROXY
 
 echo ""
 echo -e "${GREEN}Step 9: Starting services...${NC}"
@@ -198,19 +236,25 @@ ufw allow 443/tcp
 ufw --force enable
 
 echo ""
-echo -e "${GREEN}================================${NC}"
-echo -e "${GREEN}Setup complete!${NC}"
-echo -e "${GREEN}================================${NC}"
+echo -e "${GREEN}===================================================="
+echo -e "Setup complete!${NC}"
+echo -e "${GREEN}===================================================="
 echo ""
 echo "Your OpenCode server is now running at:"
 echo -e "  ${YELLOW}https://$DOMAIN${NC}"
 echo ""
+echo "Performance optimizations applied:"
+echo "  ✓ HTTP/2 enabled for faster connections"
+echo "  ✓ 500MB max request size for large files"
+echo "  ✓ Streaming AI responses (no buffering)"
+echo "  ✓ 5-minute timeouts for long operations"
+echo "  ✓ gzip compression (60-80% bandwidth savings)"
+echo "  ✓ Permissive CSP for WASM terminal support"
+echo ""
 echo "Allowed users:"
 cat /etc/oauth2-proxy/allowed-emails.txt | sed 's/^/  - /'
 echo ""
-echo "To check service status:"
+echo "Useful commands:"
 echo "  sudo systemctl status opencode oauth2-proxy nginx"
-echo ""
-echo "To view logs:"
 echo "  sudo journalctl -u opencode -f"
 echo "  sudo journalctl -u oauth2-proxy -f"

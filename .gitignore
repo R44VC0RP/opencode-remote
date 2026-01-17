@@ -1,3 +1,17 @@
+# Environment files with secrets
 config.env
-*.log
+*.env
+
+# Backup files
+*.backup
+*~
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
