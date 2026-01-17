@@ -52,15 +52,15 @@ A systemd timer runs health checks every 5 minutes to ensure services stay healt
 
 ## Security
 
-### Server Password
+### Note on Server Password
 
-OpenCode has a randomly generated server password set for defense-in-depth security.
+OpenCode does NOT use a server password in this setup. OAuth2 Proxy handles all authentication.
 
 ### Multi-Layer Authentication
 
 1. **nginx**: SSL/TLS termination
 2. **OAuth2 Proxy**: Google OAuth authentication
-3. **OpenCode**: Server password (backup layer)
+3. **OpenCode**: No additional auth (relies on OAuth2 Proxy)
 
 ## Common Issues & Prevention
 

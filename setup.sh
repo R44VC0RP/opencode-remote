@@ -42,7 +42,6 @@ echo -e "${YELLOW}Home directory: $ACTUAL_HOME${NC}"
 
 # Generate secrets
 COOKIE_SECRET=$(openssl rand -base64 32 | tr -d '\n' | head -c 32)
-OPENCODE_PASSWORD=$(openssl rand -base64 32)
 
 echo ""
 echo -e "${GREEN}Step 1: Installing OpenCode...${NC}"
@@ -78,10 +77,9 @@ sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/opencode.json > /dev/null
 }
 EOFCONFIG
 
-# Create env file with API key and password
+# Create env file with API key
 sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/.env > /dev/null << EOFENV
 ZEN_API_KEY=$ZEN_API_KEY
-OPENCODE_SERVER_PASSWORD=$OPENCODE_PASSWORD
 EOFENV
 chmod 600 $ACTUAL_HOME/.config/opencode/.env
 
@@ -359,6 +357,7 @@ echo "  ✓ nginx upstream with error retry"
 echo "  ✓ Connection pooling to prevent 502 errors"
 echo "  ✓ Resource limits (2GB memory, 65k files)"
 echo "  ✓ Watchdog for automatic restart on hang"
+  ✓ OAuth2 authentication (no separate server password)
 echo ""
 echo "Allowed users:"
 cat /etc/oauth2-proxy/allowed-emails.txt | sed 's/^/  - /'
