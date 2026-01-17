@@ -42,6 +42,7 @@ echo -e "${YELLOW}Home directory: $ACTUAL_HOME${NC}"
 
 # Generate secrets
 COOKIE_SECRET=$(openssl rand -base64 32 | tr -d '\n' | head -c 32)
+OPENCODE_PASSWORD=$(openssl rand -base64 32)
 
 echo ""
 echo -e "${GREEN}Step 1: Installing OpenCode...${NC}"
@@ -77,9 +78,10 @@ sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/opencode.json > /dev/null
 }
 EOFCONFIG
 
-# Create env file with API key
+# Create env file with API key and password
 sudo -u $ACTUAL_USER tee $ACTUAL_HOME/.config/opencode/.env > /dev/null << EOFENV
 ZEN_API_KEY=$ZEN_API_KEY
+OPENCODE_SERVER_PASSWORD=$OPENCODE_PASSWORD
 EOFENV
 chmod 600 $ACTUAL_HOME/.config/opencode/.env
 
@@ -111,6 +113,11 @@ chmod 600 /etc/oauth2-proxy/allowed-emails.txt
 echo ""
 echo -e "${GREEN}Step 6: Configuring nginx with performance optimizations...${NC}"
 tee /etc/nginx/sites-available/$DOMAIN > /dev/null << 'EOFNGINX'
+upstream opencode_backend {
+    server 127.0.0.1:4180 max_fails=3 fail_timeout=30s;
+    keepalive 32;
+}
+
 server {
     server_name DOMAIN_PLACEHOLDER;
 
@@ -123,8 +130,12 @@ server {
     # Optimize buffer sizes for large AI responses
     client_body_buffer_size 128k;
     
+    # Connection timeouts
+    client_body_timeout 300s;
+    client_header_timeout 60s;
+    
     location / {
-        proxy_pass http://127.0.0.1:4180;
+        proxy_pass http://opencode_backend;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -149,6 +160,13 @@ server {
         proxy_buffer_size 128k;
         proxy_buffers 4 256k;
         proxy_busy_buffers_size 256k;
+        
+        # Prevent 502 errors on backend restart
+        proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;
+        proxy_next_upstream_tries 2;
+        
+        # Connection pooling
+        proxy_set_header Connection "";
         
         # Permissive CSP for web coding agent with WASM terminal
         proxy_hide_header Content-Security-Policy;
@@ -188,12 +206,13 @@ certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email $(echo $ALLOWED
 ufw delete allow 80/tcp || true
 
 echo ""
-echo -e "${GREEN}Step 8: Creating systemd services...${NC}"
+echo -e "${GREEN}Step 8: Creating systemd services with reliability features...${NC}"
 
 tee /etc/systemd/system/opencode.service > /dev/null << EOFSERVICE
 [Unit]
 Description=OpenCode AI Server
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -201,8 +220,18 @@ User=$ACTUAL_USER
 WorkingDirectory=$ACTUAL_HOME
 EnvironmentFile=$ACTUAL_HOME/.config/opencode/.env
 ExecStart=$ACTUAL_HOME/.opencode/bin/opencode web --port 4096 --hostname 127.0.0.1
-Restart=on-failure
+
+# Restart configuration for reliability
+Restart=always
 RestartSec=10
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+# Watchdog - restart if service becomes unresponsive
+WatchdogSec=60
 
 [Install]
 WantedBy=multi-user.target
@@ -212,25 +241,97 @@ tee /etc/systemd/system/oauth2-proxy.service > /dev/null << 'EOFPROXY'
 [Unit]
 Description=OAuth2 Proxy
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/oauth2-proxy --config=/etc/oauth2-proxy/oauth2-proxy.cfg
-Restart=on-failure
+
+# Restart configuration for reliability
+Restart=always
 RestartSec=10
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
 EOFPROXY
 
 echo ""
-echo -e "${GREEN}Step 9: Starting services...${NC}"
-systemctl daemon-reload
-systemctl enable opencode oauth2-proxy
-systemctl start opencode oauth2-proxy
+echo -e "${GREEN}Step 9: Creating health check monitoring...${NC}"
+
+tee /usr/local/bin/opencode-health-check.sh > /dev/null << 'EOFHEALTH'
+#!/bin/bash
+
+# Health check script for OpenCode server
+LOG_FILE="/var/log/opencode-health.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Check OpenCode service
+if ! systemctl is-active --quiet opencode; then
+    log "ERROR: OpenCode service is not running. Restarting..."
+    systemctl restart opencode
+fi
+
+# Check OAuth2 Proxy service
+if ! systemctl is-active --quiet oauth2-proxy; then
+    log "ERROR: OAuth2 Proxy service is not running. Restarting..."
+    systemctl restart oauth2-proxy
+fi
+
+# Check if OpenCode is responding
+if ! curl -f -s http://127.0.0.1:4096/global/health > /dev/null 2>&1; then
+    log "WARNING: OpenCode health endpoint not responding"
+fi
+
+# Check if OAuth2 Proxy is responding
+if ! curl -f -s http://127.0.0.1:4180/ping > /dev/null 2>&1; then
+    log "WARNING: OAuth2 Proxy not responding"
+fi
+
+log "Health check completed"
+EOFHEALTH
+
+chmod +x /usr/local/bin/opencode-health-check.sh
+
+# Create health check timer
+tee /etc/systemd/system/opencode-health.service > /dev/null << 'EOFHEALTHSVC'
+[Unit]
+Description=OpenCode Health Check
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/opencode-health-check.sh
+EOFHEALTHSVC
+
+tee /etc/systemd/system/opencode-health.timer > /dev/null << 'EOFHEALTHTIMER'
+[Unit]
+Description=OpenCode Health Check Timer
+Requires=opencode-health.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=opencode-health.service
+
+[Install]
+WantedBy=timers.target
+EOFHEALTHTIMER
 
 echo ""
-echo -e "${GREEN}Step 10: Configuring firewall...${NC}"
+echo -e "${GREEN}Step 10: Starting services...${NC}"
+systemctl daemon-reload
+systemctl enable opencode oauth2-proxy opencode-health.timer
+systemctl start opencode oauth2-proxy opencode-health.timer
+
+echo ""
+echo -e "${GREEN}Step 11: Configuring firewall...${NC}"
 ufw allow 22/tcp
 ufw allow 443/tcp
 ufw --force enable
@@ -251,10 +352,18 @@ echo "  ✓ 5-minute timeouts for long operations"
 echo "  ✓ gzip compression (60-80% bandwidth savings)"
 echo "  ✓ Permissive CSP for WASM terminal support"
 echo ""
+echo "Reliability features enabled:"
+echo "  ✓ Automatic service restart on failure"
+echo "  ✓ Health monitoring every 5 minutes"
+echo "  ✓ nginx upstream with error retry"
+echo "  ✓ Connection pooling to prevent 502 errors"
+echo "  ✓ Resource limits (2GB memory, 65k files)"
+echo "  ✓ Watchdog for automatic restart on hang"
+echo ""
 echo "Allowed users:"
 cat /etc/oauth2-proxy/allowed-emails.txt | sed 's/^/  - /'
 echo ""
 echo "Useful commands:"
 echo "  sudo systemctl status opencode oauth2-proxy nginx"
 echo "  sudo journalctl -u opencode -f"
-echo "  sudo journalctl -u oauth2-proxy -f"
+echo "  sudo tail -f /var/log/opencode-health.log"
