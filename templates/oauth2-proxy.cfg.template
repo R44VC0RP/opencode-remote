@@ -1,0 +1,33 @@
+provider = "google"
+client_id = "1020362932778-bc3a5uik0rmng7knadvedeaoq2udnfk9.apps.googleusercontent.com"
+client_secret = "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"
+cookie_secret = "SJ9E3ekvXSnSsl5gSksYgk0wxzIMwbwJ"
+
+authenticated_emails_file = "/etc/oauth2-proxy/allowed-emails.txt"
+
+upstreams = ["http://127.0.0.1:4096"]
+http_address = "127.0.0.1:4180"
+
+cookie_secure = true
+redirect_url = "https://open.ryan.ceo/oauth2/callback"
+
+# Skip auth for static assets
+skip_auth_routes = [
+  "^/site\\.webmanifest$",
+  "^/favicon\\.ico$",
+  "^/robots\\.txt$"
+]
+
+# Increase timeouts for LLM requests (5 minutes)
+upstream_timeout = "300s"
+
+# Flush SSE/streaming responses immediately (critical for real-time updates)
+flush_interval = "100ms"
+
+# Pass WebSocket headers
+pass_host_header = true
+pass_access_token = false
+pass_authorization_header = false
+
+# Real IP handling
+real_client_ip_header = "X-Real-IP"

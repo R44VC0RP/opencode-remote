@@ -1,6 +1,6 @@
 # OpenCode Server Setup with Google OAuth
 
-This guide walks you through setting up an optimized OpenCode server with Google OAuth authentication on Ubuntu. The setup includes performance optimizations specifically for AI coding agents.
+This guide walks you through setting up an OpenCode server with Google OAuth authentication on Ubuntu.
 
 ## Architecture
 
@@ -19,18 +19,6 @@ This guide walks you through setting up an optimized OpenCode server with Google
                                  └─────────────────────────────────────┘
 ```
 
-## Performance Optimizations
-
-This setup includes several optimizations for running AI coding agents:
-
-- **HTTP/2**: Enabled for multiplexed connections and reduced latency
-- **Streaming AI Responses**: Proxy buffering disabled for real-time streaming
-- **Large Request Support**: 500MB maximum body size for large file uploads
-- **Extended Timeouts**: 5-minute timeouts for long-running AI operations
-- **gzip Compression**: 60-80% bandwidth reduction for text content
-- **Permissive CSP**: Allows WASM modules for terminal support (ghostty-web)
-- **Optimized Buffers**: 128k-256k buffers for handling large AI responses
-
 ## Prerequisites
 
 - Ubuntu 24.x server with root access
@@ -46,6 +34,7 @@ git clone https://github.com/yourusername/opencode-server-setup.git
 cd opencode-server-setup
 
 # Edit the config
+cp config.example.env config.env
 nano config.env
 
 # Run the setup script
@@ -142,6 +131,24 @@ http_address = "127.0.0.1:4180"
 
 cookie_secure = true
 redirect_url = "https://YOUR_DOMAIN/oauth2/callback"
+
+# Skip auth for static assets
+skip_auth_routes = [
+  "^/site\\.webmanifest$",
+  "^/favicon\\.ico$",
+  "^/robots\\.txt$"
+]
+
+# IMPORTANT: Increase timeout for LLM requests (5 minutes)
+# Default is 30s which causes 502 errors on long AI responses
+upstream_timeout = "300s"
+
+# Flush SSE/streaming responses immediately (critical for real-time updates)
+flush_interval = "100ms"
+
+# Pass headers correctly
+pass_host_header = true
+real_client_ip_header = "X-Real-IP"
 EOF
 
 # Create allowed emails list
@@ -153,61 +160,60 @@ sudo chmod 600 /etc/oauth2-proxy/oauth2-proxy.cfg
 sudo chmod 600 /etc/oauth2-proxy/allowed-emails.txt
 ```
 
-### Step 7: Configure nginx with Performance Optimizations
+### Step 7: Configure nginx
 
 ```bash
 sudo tee /etc/nginx/sites-available/opencode > /dev/null << 'NGINX'
+upstream opencode_backend {
+    server 127.0.0.1:4180 max_fails=3 fail_timeout=30s;
+    keepalive 32;
+    keepalive_requests 100;
+    keepalive_timeout 60s;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     server_name YOUR_DOMAIN;
 
-    # Enable HTTP/2
-    http2 on;
-
-    # Increase max body size for large file uploads and AI responses
+    # Increase max body size for large file uploads
     client_max_body_size 500M;
-    
-    # Optimize buffer sizes for large AI responses
     client_body_buffer_size 128k;
     
+    # Connection timeouts
+    client_body_timeout 300s;
+    client_header_timeout 60s;
+
     location / {
-        proxy_pass http://127.0.0.1:4180;
+        proxy_pass http://opencode_backend;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         
-        # WebSocket support with longer timeouts
+        # WebSocket support
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
         
-        # Extended timeouts for long-running AI operations
+        # Extended timeouts for long-running AI operations (5 minutes)
         proxy_connect_timeout 300s;
         proxy_send_timeout 300s;
         proxy_read_timeout 300s;
         send_timeout 300s;
         
-        # Disable proxy buffering for streaming AI responses
+        # Disable buffering for streaming responses
         proxy_buffering off;
         proxy_request_buffering off;
         
-        # Increase buffer sizes
+        # Buffer sizes for large responses
         proxy_buffer_size 128k;
         proxy_buffers 4 256k;
         proxy_busy_buffers_size 256k;
-        
-        # Permissive CSP for WASM terminal
-        proxy_hide_header Content-Security-Policy;
-        add_header Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob: https:; font-src 'self' data: blob:; connect-src 'self' data: blob: wss: ws: https: http:; worker-src 'self' blob: data:; child-src 'self' blob: data:; frame-src 'self' blob: data:; manifest-src 'self';" always;
     }
-
-    # Enable gzip compression
-    gzip on;
-    gzip_vary on;
-    gzip_proxied any;
-    gzip_comp_level 6;
-    gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml font/truetype font/opentype application/vnd.ms-fontobject image/svg+xml application/manifest+json;
-    gzip_disable "msie6";
 
     listen 80;
     listen [::]:80;
@@ -315,6 +321,12 @@ sudo tail -f /var/log/nginx/error.log
 
 ### Common issues
 
+**502 Bad Gateway on long requests**: OAuth2 Proxy timeout too low
+```bash
+# Ensure upstream_timeout = "300s" in /etc/oauth2-proxy/oauth2-proxy.cfg
+sudo systemctl restart oauth2-proxy
+```
+
 **502 Bad Gateway**: OpenCode service not running
 ```bash
 sudo systemctl restart opencode
@@ -326,14 +338,18 @@ sudo nano /etc/oauth2-proxy/allowed-emails.txt
 sudo systemctl restart oauth2-proxy
 ```
 
+**WebSocket disconnections**: Check nginx proxy settings
+```bash
+# Ensure proxy_read_timeout is high enough (300s recommended)
+sudo nginx -t && sudo systemctl reload nginx
+```
+
 **SSL certificate issues**: Run certbot again
 ```bash
 sudo ufw allow 80/tcp
 sudo certbot --nginx -d YOUR_DOMAIN
 sudo ufw delete allow 80/tcp
 ```
-
-**CSP Errors**: The setup includes a permissive CSP policy for WASM support. If you see CSP errors, verify the nginx config includes the CSP headers.
 
 ## Adding More Users
 
@@ -354,24 +370,6 @@ curl -fsSL https://opencode.ai/install | bash
 sudo systemctl restart opencode
 ```
 
-## Performance Notes
-
-### Streaming Responses
-The setup disables proxy buffering to enable real-time streaming of AI responses. This provides a better user experience when interacting with the AI coding agent.
-
-### Large File Support
-The 500MB request size limit allows uploading and analyzing large codebases and files.
-
-### Extended Timeouts
-5-minute timeouts prevent disconnections during:
-- Long-running code analysis
-- Large file processing
-- Complex refactoring operations
-- Extended AI conversations
-
-### Compression
-gzip compression reduces bandwidth usage by 60-80% for text-based content (code, JSON, HTML).
-
 ## Security Notes
 
 - OpenCode listens only on localhost (127.0.0.1)
@@ -379,7 +377,15 @@ gzip compression reduces bandwidth usage by 60-80% for text-based content (code,
 - Only whitelisted Google accounts can access
 - HTTPS is enforced via nginx + Let's Encrypt
 - Only ports 22 (SSH) and 443 (HTTPS) are open
-- The permissive CSP is required for WASM terminal support
+
+## Key Configuration Values
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `upstream_timeout` | 300s | LLM responses can take minutes |
+| `flush_interval` | 100ms | Real-time streaming of AI responses |
+| `proxy_read_timeout` | 300s | Match OAuth2 Proxy timeout |
+| `proxy_buffering` | off | Don't buffer streaming responses |
 
 ## License
 
